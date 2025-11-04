@@ -1,11 +1,6 @@
-use steam_audio_codec::{Packet, SteamVoiceData};
 use opus::{Channels, Decoder};
-use rsmpeg::{
-    ffi::{
-        AV_SAMPLE_FMT_S16,
-        AV_SAMPLE_FMT_FLT
-    }
-};
+use rsmpeg::ffi::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_S16};
+use steam_audio_codec::{Packet, SteamVoiceData};
 
 use crate::SAMPLE_RATE;
 
@@ -14,7 +9,8 @@ const FRAME_SIZE: usize = 960;
 pub struct SteamVoiceDecoder {
     decoder: Decoder,
     seq: u16,
-    decode_fn: Box<dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, Box<dyn std::error::Error>>>,
+    decode_fn:
+        Box<dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, Box<dyn std::error::Error>>>,
 }
 
 fn read_bytes<const N: usize>(data: &[u8]) -> Result<([u8; N], &[u8]), Box<dyn std::error::Error>> {
@@ -34,9 +30,15 @@ fn read_u16(data: &[u8]) -> Result<(u16, &[u8]), Box<dyn std::error::Error>> {
 impl SteamVoiceDecoder {
     pub fn new(sample_format: i32) -> Result<Self, Box<dyn std::error::Error>> {
         let decoder = Decoder::new(SAMPLE_RATE as u32, Channels::Mono)?;
-        let decode_fn: Box<dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, Box<dyn std::error::Error>>> = match sample_format {
+        let decode_fn: Box<
+            dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, Box<dyn std::error::Error>>,
+        > = match sample_format {
             AV_SAMPLE_FMT_S16 => Box::new(|decoder, input, output| {
-                let output_length = if input.len() == 0 { FRAME_SIZE } else { output.len() } / std::mem::size_of::<i16>();
+                let output_length = if input.is_empty() {
+                    FRAME_SIZE
+                } else {
+                    output.len()
+                } / std::mem::size_of::<i16>();
                 let out = unsafe {
                     std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut i16, output_length)
                 };
@@ -44,20 +46,24 @@ impl SteamVoiceDecoder {
                 Ok(n * std::mem::size_of::<i16>())
             }),
             AV_SAMPLE_FMT_FLT => Box::new(|decoder, input, output| {
-                let output_length = if input.len() == 0 { FRAME_SIZE } else { output.len() } / std::mem::size_of::<f32>();
+                let output_length = if input.is_empty() {
+                    FRAME_SIZE
+                } else {
+                    output.len()
+                } / std::mem::size_of::<f32>();
                 let out = unsafe {
                     std::slice::from_raw_parts_mut(output.as_mut_ptr() as *mut f32, output_length)
                 };
                 let n = decoder.decode_float(input, out, false)?;
                 Ok(n * std::mem::size_of::<f32>())
             }),
-            _ => panic!("decoder created with sample format that we didn't account for!")
+            _ => panic!("decoder created with sample format that we didn't account for!"),
         };
 
         Ok(Self {
             decoder,
             seq: 0,
-            decode_fn
+            decode_fn,
         })
     }
 
@@ -76,7 +82,7 @@ impl SteamVoiceDecoder {
                     }
                 }
                 Packet::OpusPlc(opus) => {
-                    let size = self.decode_opus(opus.data, &mut output_buffer[total..])?;
+                    let size = self.decode_opus(opus.as_slice(), &mut output_buffer[total..])?;
                     total += size;
                     if total >= output_buffer.len() {
                         return Err("InsufficientOutputBuffer".into());
@@ -112,7 +118,8 @@ impl SteamVoiceDecoder {
             } else {
                 let lost = (seq - self.seq).min(10);
                 for _ in 0..lost {
-                    let count = (self.decode_fn)(&mut self.decoder, &[], &mut output_buffer[total..])?;
+                    let count =
+                        (self.decode_fn)(&mut self.decoder, &[], &mut output_buffer[total..])?;
                     total += count;
                     if total >= output_buffer.len() {
                         return Err("InsufficientOutputBuffer".into());
@@ -127,7 +134,11 @@ impl SteamVoiceDecoder {
                 return Err("InsufficientData".into());
             }
 
-            let count = (self.decode_fn)(&mut self.decoder, &data[0..len], &mut output_buffer[total..])?;
+            let count = (self.decode_fn)(
+                &mut self.decoder,
+                &data[0..len],
+                &mut output_buffer[total..],
+            )?;
             data = &data[len..];
             total += count;
             if total >= output_buffer.len() {
