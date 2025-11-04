@@ -134,24 +134,19 @@ impl PlayerStream {
         })
     }
 
-    fn append_samples(&mut self, samples: &[u8]) {
+    fn append_samples(&mut self, samples: impl IntoIterator<Item = u8>) {
         if self.buffered_samples() == 0 {
             self.time_pad = INITIAL_TIME_PAD_SECONDS;
         }
-        self.decoded_samples.extend(samples.iter());
+        self.decoded_samples.extend(samples);
     }
 
-    fn consume_samples(&mut self, sample_count: usize) -> Vec<u8> {
-        let bytes = sample_count * self.bytes_per_sample;
-        let mut out = Vec::with_capacity(bytes);
-        for _ in 0..bytes {
-            if let Some(s) = self.decoded_samples.pop_front() {
-                out.push(s);
-            } else {
-                out.push(0);
-            }
-        }
-        out
+    fn consume_samples(&mut self, sample_count: usize) -> impl Iterator<Item = u8> {
+        let samples = self
+            .decoded_samples
+            .drain(..sample_count.min(self.decoded_samples.len()));
+        let padded_with_zeroes = samples.chain(core::iter::repeat(0));
+        padded_with_zeroes.take(sample_count)
     }
 
     fn buffered_samples(&self) -> usize {
@@ -185,8 +180,9 @@ fn discover_players(
                 let EngineMessage::SvcVoiceData(ref svc_voice_data) = **engine_message else {
                     continue;
                 };
-                let Ok(steam_voice_data) = SteamVoiceData::new(&svc_voice_data.data) else {
-                    panic!("Failed to parse steam voice data!");
+                let steam_voice_data = match SteamVoiceData::new(&svc_voice_data.data) {
+                    Ok(data) => data,
+                    Err(err) => panic!("Failed to parse steam voice data: {err}"),
                 };
 
                 let key = steam_voice_data.steam_id;
@@ -286,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut tmp = vec![0u8; 8192 * player_stream.bytes_per_sample];
                     match player_stream.decoder.decode(steam_voice_data, &mut tmp) {
                         Ok(samples_written) => {
-                            player_stream.append_samples(&tmp[..samples_written]);
+                            player_stream.append_samples(tmp.iter().take(samples_written).copied());
                         }
                         Err(e) => {
                             eprintln!("Decoder error: {:?}", e);
@@ -326,20 +322,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (demo_frame_time_as_pts - player_stream.last_demo_pts) as usize;
                 player_stream.last_demo_pts = demo_frame_time_as_pts;
 
-                let frame_samples = if player_stream.playing {
-                    let samples = player_stream.consume_samples(demo_frame_sample_count);
+                let mut samples: Vec<u8> = player_stream.frame_accum.clone();
+
+                if player_stream.playing {
+                    samples.extend(player_stream.consume_samples(demo_frame_sample_count));
                     if player_stream.buffered_samples() == 0 {
                         player_stream.playing = false;
                     }
-                    samples
                 } else {
-                    vec![0u8; demo_frame_sample_count * player_stream.bytes_per_sample]
+                    samples.extend(core::iter::repeat_n(
+                        0u8,
+                        demo_frame_sample_count * player_stream.bytes_per_sample,
+                    ));
                 };
-
-                let mut samples: Vec<u8> =
-                    Vec::with_capacity(player_stream.frame_accum.len() + frame_samples.len());
-                samples.extend(&player_stream.frame_accum);
-                samples.extend(frame_samples);
 
                 let mut offset = 0;
                 let frame_size_bytes =

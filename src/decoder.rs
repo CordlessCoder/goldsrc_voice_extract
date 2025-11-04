@@ -12,14 +12,13 @@ pub enum DecoderError {
     #[error("Insufficient data")]
     InsufficientData,
     #[error("Opus Error: {0}")]
-    OpusError(#[from] opus::Error)
+    OpusError(#[from] opus::Error),
 }
 
 pub struct SteamVoiceDecoder {
     decoder: Decoder,
     seq: u16,
-    decode_fn:
-        Box<dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, DecoderError>>,
+    decoder_kind: SampleDecoderKind,
 }
 
 fn read_bytes<const N: usize>(data: &[u8]) -> Result<([u8; N], &[u8]), DecoderError> {
@@ -34,13 +33,21 @@ fn read_u16(data: &[u8]) -> Result<(u16, &[u8]), DecoderError> {
     Ok((u16::from_le_bytes(bytes), data))
 }
 
-impl SteamVoiceDecoder {
-    pub fn new(sample_format: i32) -> Result<Self, DecoderError> {
-        let decoder = Decoder::new(SAMPLE_RATE as u32, Channels::Mono)?;
-        let decode_fn: Box<
-            dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, DecoderError>,
-        > = match sample_format {
-            AV_SAMPLE_FMT_S16 => Box::new(|decoder, input, output| {
+#[derive(Debug)]
+enum SampleDecoderKind {
+    Float,
+    S16,
+}
+
+impl SampleDecoderKind {
+    pub fn decode(
+        &self,
+        decoder: &mut Decoder,
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, DecoderError> {
+        match self {
+            SampleDecoderKind::S16 => {
                 let output_length = if input.is_empty() {
                     FRAME_SIZE
                 } else {
@@ -51,8 +58,8 @@ impl SteamVoiceDecoder {
                 };
                 let n = decoder.decode(input, out, false)?;
                 Ok(n * std::mem::size_of::<i16>())
-            }),
-            AV_SAMPLE_FMT_FLT => Box::new(|decoder, input, output| {
+            }
+            SampleDecoderKind::Float => {
                 let output_length = if input.is_empty() {
                     FRAME_SIZE
                 } else {
@@ -63,14 +70,24 @@ impl SteamVoiceDecoder {
                 };
                 let n = decoder.decode_float(input, out, false)?;
                 Ok(n * std::mem::size_of::<f32>())
-            }),
+            }
+        }
+    }
+}
+
+impl SteamVoiceDecoder {
+    pub fn new(sample_format: i32) -> Result<Self, DecoderError> {
+        let decoder = Decoder::new(SAMPLE_RATE as u32, Channels::Mono)?;
+        let decoder_kind = match sample_format {
+            AV_SAMPLE_FMT_S16 => SampleDecoderKind::S16,
+            AV_SAMPLE_FMT_FLT => SampleDecoderKind::Float,
             _ => panic!("decoder created with sample format that we didn't account for!"),
         };
 
         Ok(Self {
             decoder,
             seq: 0,
-            decode_fn,
+            decoder_kind,
         })
     }
 
@@ -107,7 +124,7 @@ impl SteamVoiceDecoder {
         &mut self,
         mut data: &[u8],
         output_buffer: &mut [u8],
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+    ) -> Result<usize, DecoderError> {
         let mut total = 0;
         while data.len() > 2 {
             let (len, remainder) = read_u16(data)?;
@@ -125,11 +142,14 @@ impl SteamVoiceDecoder {
             } else {
                 let lost = (seq - self.seq).min(10);
                 for _ in 0..lost {
-                    let count =
-                        (self.decode_fn)(&mut self.decoder, &[], &mut output_buffer[total..])?;
+                    let count = self.decoder_kind.decode(
+                        &mut self.decoder,
+                        &[],
+                        &mut output_buffer[total..],
+                    )?;
                     total += count;
                     if total >= output_buffer.len() {
-                        return Err("InsufficientOutputBuffer".into());
+                        return Err(DecoderError::InsufficientData);
                     }
                 }
             }
@@ -138,10 +158,10 @@ impl SteamVoiceDecoder {
             self.seq = seq + 1;
 
             if data.len() < len {
-                return Err("InsufficientData".into());
+                return Err(DecoderError::InsufficientData);
             }
 
-            let count = (self.decode_fn)(
+            let count = self.decoder_kind.decode(
                 &mut self.decoder,
                 &data[0..len],
                 &mut output_buffer[total..],
@@ -149,7 +169,7 @@ impl SteamVoiceDecoder {
             data = &data[len..];
             total += count;
             if total >= output_buffer.len() {
-                return Err("InsufficientOutputBuffer".into());
+                return Err(DecoderError::InsufficientData);
             }
         }
 
