@@ -1,37 +1,44 @@
 use opus::{Channels, Decoder};
 use rsmpeg::ffi::{AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_S16};
 use steam_audio_codec::{Packet, SteamVoiceData};
+use thiserror::Error;
 
 use crate::SAMPLE_RATE;
 
 const FRAME_SIZE: usize = 960;
 
+#[derive(Debug, Error)]
+pub enum DecoderError {
+    #[error("Insufficient data")]
+    InsufficientData,
+    #[error("Opus Error: {0}")]
+    OpusError(#[from] opus::Error)
+}
+
 pub struct SteamVoiceDecoder {
     decoder: Decoder,
     seq: u16,
     decode_fn:
-        Box<dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, Box<dyn std::error::Error>>>,
+        Box<dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, DecoderError>>,
 }
 
-fn read_bytes<const N: usize>(data: &[u8]) -> Result<([u8; N], &[u8]), Box<dyn std::error::Error>> {
-    if data.len() < N {
-        Err("InsufficientData".into())
-    } else {
-        let (result, rest) = data.split_at(N);
-        Ok((result.try_into().unwrap(), rest))
-    }
+fn read_bytes<const N: usize>(data: &[u8]) -> Result<([u8; N], &[u8]), DecoderError> {
+    let Some((result, rest)) = data.split_at_checked(N) else {
+        return Err(DecoderError::InsufficientData);
+    };
+    Ok((result.try_into().unwrap(), rest))
 }
 
-fn read_u16(data: &[u8]) -> Result<(u16, &[u8]), Box<dyn std::error::Error>> {
+fn read_u16(data: &[u8]) -> Result<(u16, &[u8]), DecoderError> {
     let (bytes, data) = read_bytes(data)?;
     Ok((u16::from_le_bytes(bytes), data))
 }
 
 impl SteamVoiceDecoder {
-    pub fn new(sample_format: i32) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(sample_format: i32) -> Result<Self, DecoderError> {
         let decoder = Decoder::new(SAMPLE_RATE as u32, Channels::Mono)?;
         let decode_fn: Box<
-            dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, Box<dyn std::error::Error>>,
+            dyn Fn(&mut Decoder, &[u8], &mut [u8]) -> Result<usize, DecoderError>,
         > = match sample_format {
             AV_SAMPLE_FMT_S16 => Box::new(|decoder, input, output| {
                 let output_length = if input.is_empty() {
