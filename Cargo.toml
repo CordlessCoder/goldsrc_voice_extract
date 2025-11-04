@@ -1,0 +1,12 @@
+[package]
+name = "goldsrc_voice_extract"
+description = "Extracts voice chat data from GoldSrc demo files into a multi-stream audio container"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+dem = "0.2.3"
+opus = "0.3.0"
+rsmpeg = { version = "0.18.0", features = ["link_system_ffmpeg"] }
+steam-audio-codec = "0.1.1"
