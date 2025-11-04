@@ -44,7 +44,7 @@ struct PlayerStream {
 }
 
 impl PlayerStream {
-    fn new(fmt_ctx: &mut AVFormatContextOutput, codec: &AVCodecRef<'static>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(fmt_ctx: &mut AVFormatContextOutput, codec: &AVCodecRef<'static>, bitrate: Option<i64>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut codec_ctx = AVCodecContext::new(codec);
 
         let channel_layout = AVChannelLayout::from_nb_channels(1).into_inner();
@@ -83,6 +83,9 @@ impl PlayerStream {
         codec_ctx.set_ch_layout(channel_layout);
         codec_ctx.set_sample_rate(encoder_rate);
         codec_ctx.set_time_base(AVRational { num: 1, den: codec_ctx.sample_rate });
+        if let Some(bitrate) = bitrate {
+            codec_ctx.set_bit_rate(bitrate);
+        }
 
         codec_ctx.open(None)?;
 
@@ -141,7 +144,7 @@ impl PlayerStream {
     }
 }
 
-fn discover_players(players: &mut HashMap<u64, PlayerStream>, demo: &Demo, fmt_ctx: &mut AVFormatContextOutput, codec: &AVCodecRef<'static>) {
+fn discover_players(players: &mut HashMap<u64, PlayerStream>, demo: &Demo, fmt_ctx: &mut AVFormatContextOutput, codec: &AVCodecRef<'static>, bitrate: Option<i64>) {
     for entry in &demo.directory.entries {
         if entry.type_ == 0 { continue; } // nEntryType == DEMO_STARTUP
         for frame in &entry.frames {
@@ -160,7 +163,7 @@ fn discover_players(players: &mut HashMap<u64, PlayerStream>, demo: &Demo, fmt_c
                 players
                     .entry(key)
                     .or_insert_with(|| {
-                        PlayerStream::new(fmt_ctx, codec).expect("Creating player stream failed!")
+                        PlayerStream::new(fmt_ctx, codec, bitrate).expect("Creating player stream failed!")
                     });
             }
         }
@@ -180,7 +183,7 @@ struct Args {
 
     /// Audio bitrate for encoder (when relevant)
     #[arg(short = 'b', value_name = "bitrate")]
-    b: Option<String>,
+    b: Option<i64>,
 
     /// Output format. Infered from output file name extension if not included
     #[arg(short = 'f', value_name = "fmt")]
@@ -210,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let demo = open_demo(args.input)?;
     let mut players: HashMap<u64, PlayerStream> = HashMap::new();
-    discover_players(&mut players, &demo, &mut fmt_ctx, &codec);
+    discover_players(&mut players, &demo, &mut fmt_ctx, &codec, args.b);
 
     fmt_ctx.write_header(&mut None)?;
     let mut last_frame_time: Option<f32> = None;
